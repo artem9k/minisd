@@ -1,17 +1,14 @@
-Can the mini-dalle treatment be applied to Stable Diffusion?
-
-
-### minisd
-
-- A version of Stable Diffusion with performance and security improvements
-- This repo will also eventually explore training small, unconditioned diffusion models using the methodology from the paper
-
-### Changelog
-
-- [ ] SEC safepickle instead of pickle
+Can the dalle-mini treatment be applied to Stable Diffusion?
 
 >100m parameter model can be run on laptops, phone...
-YOLOv3 has 33M params. It runs 4fps on a good phone
-With a 100M model, it can generate images in near real-time on-device
-In the cloud, it will be cheap.
+YOLOv3 has 33M params. It runs at 4fps on a good phone
+A ~100M param model could generate images in near real-time on phones and desktop PCs
 
+### Todo list 
+- [ ] Implement DDPM / DDPM-Improved
+    - [ ] Train unconditional CIFAR
+    - [ ] Train conditional (optional)
+- [ ] Implement DDIM
+- [ ] Implement LDM
+- [ ] Find small conv net architectures that have attention (attention important? can we do 1d conv instead?)
+- [ ] RN50 CLIP encoder
