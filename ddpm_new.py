@@ -6,18 +6,239 @@ import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+import numpy as np
+
+#### TESTS
+
+def test_res():
+    x = torch.randn((1, 128, 32, 32))
+    res = ResnetBlock(128, 256, temb=False)
+    y = res(x)
+    assert y.shape == (1, 256, 32, 32)
+
+def test_sin():
+    sin = SinusoidalEmbedding(50, 256)
+    assert sin[0].shape == (256,)
+
+def test_res_temb():
+    temb = SinusoidalEmbedding(50, 256)
+    x = torch.randn((1, 128, 32, 32))
+    res = ResnetBlock(128, 256)
+    y = res(x, temb[0])
+    assert y.shape == (1, 256, 32, 32)
+
+def test_attn():
+    x = torch.randn((1, 128, 32, 32))
+    attn = AttnBlock(128)
+    y = attn(x)
+    assert y.shape == (1, 128, 32, 32)
+
+def test_unet():
+    x = torch.randn((1, 128, 32, 32))
+    u = UNet()
+    y = UNet(x)
+
+
+def Normalize(in_channels, num_groups=32):
+    return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+
+"""
+PE(pos,2i) = sin(pos/10000**(2*i/hidden_units))
+PE(pos,2i+1) = cos(pos/10000**(2*i/hidden_units))
+todo make not shitty
+"""
+
+class SinusoidalEmbedding(nn.Module):
+    def __init__(self, size, num_hidden_units):
+        super(SinusoidalEmbedding, self).__init__()
+        PE = torch.zeros((size, num_hidden_units))
+        for i in range(size):
+            for j in range(num_hidden_units):
+                if i % 2 == 0:
+                    PE[i, j] = math.sin(i/ 10000 ** (2*j/num_hidden_units))
+                else:
+                    PE[i, j] = math.cos(i/10000**(2*j/num_hidden_units))
+        self.PE = PE
+    def __getitem__(self, i):
+        return self.PE[i]
+
+"""
+class RandomFourierFeatures(nn.Module):
+    def __init__(self, size):
+        super(TimestepEmbedding, self).__init__()
+        beta = 
+        alpha = 0
+        self.temb_block = []
+        for i in temb_block:
+            pass
+    def forward(self, i):
+        return self.temb_block[i]
+"""    
+
+class ResBlock(nn.Module):
+    def __init__(self):
+        super(ResBlock, self).__init__()
+
+    def forward(self, x):
+        x = F.relu(torch.nn.self.conv1(x))
+        h = x
+        x = F.relu(self.conv2(x))
+        x = x + h
+
+class ResnetBlock(nn.Module):
+    def __init__(self,
+        in_channels,
+        out_channels,
+        dropout=0.1,
+        emb_channels=512,
+        temb=True,
+        tembs=None
+        ):
+        super(ResnetBlock, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
+        self.relu = torch.nn.ReLU()
+        self.drop = torch.nn.Dropout(dropout)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.use_conv_shortcut = False
+
+        self.norm1 = Normalize(in_channels)
+        self.norm2 = Normalize(out_channels)
+
+        # can just do linear for timestep embedding
+        if temb:
+            self.temb = True
+            self.linear = torch.nn.Linear(out_channels, out_channels)
+        else:
+            self.temb = False
+
+        self.emb_proj = torch.nn.Linear(emb_channels, out_channels)
+        if self.in_channels != self.out_channels:
+            if self.use_conv_shortcut:
+                self.conv_shortcut = torch.nn.Conv2d(in_channels, out_channels, 3, padding=1)
+            else:
+                self.resize_shortcut = torch.nn.Conv2d(in_channels, out_channels, 1, padding=0)
+
+    def forward(self, x, emb=None):
+
+        x_prev = x
+        x = self.norm1(x)
+        x = self.relu(x)
+        x = self.conv1(x)
+
+        if self.temb:
+            x = self.relu(x)
+            x += self.linear(emb).reshape(1, -1, 1, 1)
+
+        x = self.norm2(x)
+        x = self.relu(x)
+        x = self.drop(x)
+        x = self.conv2(x)
+
+        if self.in_channels != self.out_channels:
+            if self.use_conv_shortcut:
+                x_prev = self.conv_shortcut(x_prev)
+            else:
+                x_prev = self.resize_shortcut(x_prev)
+
+        return x + x_prev 
+
+
+class AttnBlock(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.in_channels = in_channels
+
+        self.norm = Normalize(in_channels)
+        self.q = torch.nn.Conv2d(in_channels,
+                                 in_channels,
+                                 kernel_size=1,
+                                 stride=1,
+                                 padding=0)
+        self.k = torch.nn.Conv2d(in_channels,
+                                 in_channels,
+                                 kernel_size=1,
+                                 stride=1,
+                                 padding=0)
+        self.v = torch.nn.Conv2d(in_channels,
+                                 in_channels,
+                                 kernel_size=1,
+                                 stride=1,
+                                 padding=0)
+        self.proj_out = torch.nn.Conv2d(in_channels,
+                                        in_channels,
+                                        kernel_size=1,
+                                        stride=1,
+                                        padding=0)
+
+    def forward(self, x):
+        h_ = x
+        h_ = self.norm(h_)
+        q = self.q(h_)
+        k = self.k(h_)
+        v = self.v(h_)
+
+        # compute attention
+        b,c,h,w = q.shape
+        q = q.reshape(b,c,h*w)
+        q = q.permute(0,2,1)   # b,hw,c
+        k = k.reshape(b,c,h*w) # b,c,hw
+        w_ = torch.bmm(q,k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
+        w_ = w_ * (int(c)**(-0.5))
+        w_ = torch.nn.functional.softmax(w_, dim=2)
+
+        # attend to values
+        v = v.reshape(b,c,h*w)
+        w_ = w_.permute(0,2,1)   # b,hw,hw (first hw of k, second of q)
+        h_ = torch.bmm(v,w_)     # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+        h_ = h_.reshape(b,c,h,w)
+
+        h_ = self.proj_out(h_)
+
+        return x+h_
 
 class UNet(nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        channel_mult = (1, 2, 4, 8),
+        ch=4):
+
         super(UNet, self).__init__()
-        
+        """
+        self.ch = ch
+        self.temb_ch = self.ch*4
+        self.num_resolutions = len(channel_mult)
+        self.num_res_blocks = num_res_blocks
+        self.resolution = resolution
+        self.in_channels = in_channels
+        self.use_timestep = use_timestep
+        self.front_conv = torch.nn.Conv2d(self.in_channels, self.ch, 3, 1, 1)
+        """
+        self.down = [] #nn.ModuleList()
+
+        # timestep embedding
+        # we dont do for now
+        temb = SinusoidalEmbedding(size, num_hidden_units)
+
+        for scale in channel_mult:
+            # block
+            # attn
+            # add block and attn, combine into module
+
+            print(scale)
+
+        """
+        super(UNet, self).__init__()
+        """        
         self.input_shape = (1, 3, 32, 32)
         self.output_shape = (1, 3, 32, 32)
 
         self.conv1 = torch.nn.Conv2d(3, 3, 3, padding=1)
         self.conv2 = torch.nn.Conv2d(3, 3, 3, padding=1)
-
         """
+
         self.ch = ch
         self.temb_ch = self.ch*4
         self.num_resolutions = len(channel_scales)
@@ -35,14 +256,14 @@ class UNet(nn.Module):
             block_out, 
             self.temb_ch, 
             dropout, 
-            attn_type)
+            attn_type))
+
         w = 8
         assert w % 2 == 0
 
         s = int(math.log(w))
         r = 56
         # 3 successive downsampling layers
-
         #input is (1, 3, 64, 64)
 
         self.downsample = torch.nn.MaxPool2d(2, 2)
@@ -65,7 +286,6 @@ class UNet(nn.Module):
             torch.nn.ReLU(),
             torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
             torch.nn.ReLU(),
-
         )
         r *= 2
         self.block_3 = torch.nn.Sequential(
@@ -81,7 +301,11 @@ class UNet(nn.Module):
 
         # mid part of unet
 
-        #
+        self.mid_block = torch.nn.Sequential([
+            ResBlock(),
+            AttnBlock(128),
+            ResBlock(),
+        ])
 
         # up part of unet
 
@@ -133,8 +357,9 @@ class UNet(nn.Module):
         x = self.upsample(x)
         x = self.block_6(x)
 
+        x = self.mid_block(x)
+
         return x
-        """
 
     
     def forward(self, x, t):
@@ -145,6 +370,7 @@ class UNet(nn.Module):
         x = self.conv2(x)
         
         return x
+    """
 
 # HELPER FUNCTIONS
 
@@ -272,6 +498,15 @@ class DiffusionModel():
         return x
 
 if __name__ == "__main__":
+
+    test_res()
+    test_res_temb()
+    test_sin()
+    test_attn()
+    test_unet()
+
+
+    """
     ds = torchvision.datasets.CIFAR10(download=True, root=".")
     diffusion_ds = remove_labels(ds)
     diffusion_ds = totensor_ds(diffusion_ds)
@@ -280,7 +515,9 @@ if __name__ == "__main__":
     diffusion._sample(eps_model)
     diffusion._train(diffusion_ds, eps_model, epochs=1, train_steps_per_epoch=10)
 
+    """
     # stuff for ipynb
+
     """
     t = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0,0,0],[1,1,1])])
 
