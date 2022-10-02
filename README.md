@@ -1,8 +1,9 @@
-Can the dalle-mini treatment be applied to Stable Diffusion?
+C8an the dalle-mini treatment be applied to Stable Diffusion?
 
 >100m parameter model can be run on laptops, phone...
 YOLOv3 has 33M params. It runs at 4fps on a good phone
 A ~100M param model could generate images in near real-time on phones and desktop PCs
+The unet can have less params, but include attention
 
 ### Todo list 
 - [ ] Implement DDPM / DDPM-Improved

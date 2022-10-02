@@ -7,6 +7,7 @@ from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
+from collections import OrderedDict
 
 #### TESTS
 
@@ -34,12 +35,11 @@ def test_attn():
     assert y.shape == (1, 128, 32, 32)
 
 def test_unet():
-    x = torch.randn((1, 128, 32, 32))
-    u = UNet()
-    y = UNet(x)
+    x = torch.randn((1, 3, 32, 32))
+    u = UNet(64, 64)
+    y = u(x)
 
-
-def Normalize(in_channels, num_groups=32):
+def Normalize(in_channels, num_groups=2):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
 
 """
@@ -80,7 +80,7 @@ class ResBlock(nn.Module):
         super(ResBlock, self).__init__()
 
     def forward(self, x):
-        x = F.relu(torch.nn.self.conv1(x))
+        x = F.relu(self.conv1(x))
         h = x
         x = F.relu(self.conv2(x))
         x = x + h
@@ -107,6 +107,8 @@ class ResnetBlock(nn.Module):
         self.norm1 = Normalize(in_channels)
         self.norm2 = Normalize(out_channels)
 
+        temb = False
+
         # can just do linear for timestep embedding
         if temb:
             self.temb = True
@@ -124,7 +126,7 @@ class ResnetBlock(nn.Module):
     def forward(self, x, emb=None):
 
         x_prev = x
-        x = self.norm1(x)
+        #x = self.norm1(x)
         x = self.relu(x)
         x = self.conv1(x)
 
@@ -132,7 +134,7 @@ class ResnetBlock(nn.Module):
             x = self.relu(x)
             x += self.linear(emb).reshape(1, -1, 1, 1)
 
-        x = self.norm2(x)
+        #x = self.norm2(x)
         x = self.relu(x)
         x = self.drop(x)
         x = self.conv2(x)
@@ -199,178 +201,162 @@ class AttnBlock(nn.Module):
 
         return x+h_
 
+"""
+total params for 128 dim: 
+142872835
+
+- fix temb
+- param count right?
+"""
+
 class UNet(nn.Module):
     def __init__(
         self,
+        channels,
+        out_channels,
         channel_mult = (1, 2, 4, 8),
-        ch=4):
+        ch=4,
+        num_res_blocks=2,
+        resolution=64,
+        use_timestep=False,
+        ):
 
         super(UNet, self).__init__()
-        """
-        self.ch = ch
-        self.temb_ch = self.ch*4
-        self.num_resolutions = len(channel_mult)
-        self.num_res_blocks = num_res_blocks
-        self.resolution = resolution
-        self.in_channels = in_channels
-        self.use_timestep = use_timestep
-        self.front_conv = torch.nn.Conv2d(self.in_channels, self.ch, 3, 1, 1)
-        """
-        self.down = [] #nn.ModuleList()
-
-        # timestep embedding
-        # we dont do for now
-        temb = SinusoidalEmbedding(size, num_hidden_units)
-
-        for scale in channel_mult:
-            # block
-            # attn
-            # add block and attn, combine into module
-
-            print(scale)
-
-        """
-        super(UNet, self).__init__()
-        """        
-        self.input_shape = (1, 3, 32, 32)
-        self.output_shape = (1, 3, 32, 32)
-
-        self.conv1 = torch.nn.Conv2d(3, 3, 3, padding=1)
-        self.conv2 = torch.nn.Conv2d(3, 3, 3, padding=1)
-        """
-
-        self.ch = ch
-        self.temb_ch = self.ch*4
-        self.num_resolutions = len(channel_scales)
-        self.num_res_blocks = num_res_blocks
-        self.resolution = resolution
-        self.in_channels = in_channels
-        self.use_timestep = use_timestep
-        self.front_conv = torch.nn.Conv2d(self.in_channels, self.ch, 3, 1, 1)
+     
         self.down = nn.ModuleList()
-        for scale in channel_scales:
-            # block
+        self.up = nn.ModuleList()
+
+        self.ch = channels
+        self.temb_ch = self.ch*4
+        num_resolutions = len(channel_mult)
+        self.num_res_blocks = num_res_blocks
+        self.resolution = resolution
+        self.use_timestep = use_timestep
+
+        channel_scale = [self.ch * i for i in channel_mult]
+
+        self.down = nn.ModuleList()
+        self.up = nn.ModuleList()
+        self.in_conv = nn.Conv2d(3, self.ch, kernel_size=7, padding="same")
+        prev_dim = None
+
+        # down 
+        for scale in range(len(channel_mult)):
+            # bloc
             # attn
             # add block and attn, combine into module
-            self.down.append(create_downsample_block(block_in, 
-            block_out, 
-            self.temb_ch, 
-            dropout, 
-            attn_type))
+            dim = channel_scale[scale]
 
-        w = 8
-        assert w % 2 == 0
+            for i in range(num_res_blocks):
+                in_dim = dim
+                if prev_dim is not None:
+                    if prev_dim != dim:
+                        in_dim = prev_dim
 
-        s = int(math.log(w))
-        r = 56
-        # 3 successive downsampling layers
-        #input is (1, 3, 64, 64)
+                res1 = ResnetBlock(in_dim, dim) 
+                res2 = ResnetBlock(dim, dim)
+                attn = AttnBlock(dim)
 
-        self.downsample = torch.nn.MaxPool2d(2, 2)
-        self.upsample = torch.nn.Upsample(scale_factor=2, mode="nearest")
-        
-        # down part of unet
-        self.block_1 = torch.nn.Sequential(
-            torch.nn.Conv2d(3, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
+                down_block = torch.nn.Sequential(
+                    res1,
+                    res2,
+                    attn
+                )
+
+                self.down.append(down_block)
+
+                prev_dim = dim
+
+            if scale != num_resolutions - 1:
+                self.down.append(torch.nn.MaxPool2d(2, 2))
+
+        self.mid = torch.nn.Sequential(
+            ResnetBlock(prev_dim, prev_dim * 4),
+            AttnBlock(prev_dim * 4),
+            ResnetBlock(prev_dim * 4, prev_dim),
         )
-        r *= 2
-        self.block_2 = torch.nn.Sequential(
-            torch.nn.Conv2d(r // 2, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-        )
-        r *= 2
-        self.block_3 = torch.nn.Sequential(
-            torch.nn.Conv2d(r // 2, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU()
-
-        )
-        self.relu = torch.nn.ReLU()
-
-        # mid part of unet
-
-        self.mid_block = torch.nn.Sequential([
-            ResBlock(),
-            AttnBlock(128),
-            ResBlock(),
-        ])
 
         # up part of unet
+        prev_dim=prev_dim * 2
+        inner_dim = None
+        for scale in range(len(channel_mult) - 1, -1, -1):
 
-        self.block_4 = torch.nn.Sequential(
-            torch.nn.Conv2d(r, r // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r // 2, r // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r // 2, r // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU()
-        )
+            # blocc
+            # attn
+            # add block and attn, combine into module
 
-        r //= 2
+            dim = channel_scale[scale]
 
-        self.block_5 = torch.nn.Sequential(
-            torch.nn.Conv2d(r, r // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r // 2, r // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r // 2, r // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU()
-        )
+            for i in range(num_res_blocks):
 
-        r //= 2
+                in_dim = dim
+                if prev_dim is not None:
+                    inner_dim = prev_dim
+                    if prev_dim != dim:
+                        in_dim = prev_dim
+                
+                res1 = ResnetBlock(in_dim, dim) 
+                res2 = ResnetBlock(dim, dim)
+                attn = AttnBlock(dim)
 
-        self.block_6 = torch.nn.Sequential(
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r, r, kernel_size=3, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(r , 3, kernel_size=3, padding=1),
-            torch.nn.ReLU()
-        )
+                down_block = torch.nn.Sequential(
+                    res1,
+                    res2,
+                    attn
+                )
 
+                self.up.append(down_block)
+                prev_dim = dim
+           
+            if scale != 0: 
+                #upconv
+                self.up.append(torch.nn.ConvTranspose2d(dim, dim // 2, 3, stride=2, padding=1, output_padding=1))
+
+        #self.out_conv = nn.Conv2d(ch * 4, out_ch)
     def forward(self, x):
 
-        x = self.block_1(x)
-        x_1 = x
-        x = self.downsample(x)
-        x = self.block_2(x)
-        x_2 = x
-        x = self.downsample(x)
-        x = self.block_3(x)
-        x_3 = x
+        x = self.in_conv(x)
+        state = []
+        for i, module in enumerate(self.down):
+            if type(module) != nn.MaxPool2d:
+                res1, res2, attn = module
+                x = res1(x)
+                x = res2(x)
+                x = attn(x)
+            else:
+                # if this layer downsamples, we will add x to state
+                state.append(x)
+                x = module(x)
+        
+        state.append(x)
 
-        x = self.block_4(x)
-        x = self.upsample(x)
-        x = self.block_5(x)
-        x = self.upsample(x)
-        x = self.block_6(x)
+        x = self.mid(x)
+        add_l = False
 
-        x = self.mid_block(x)
+        x = torch.cat((x, state.pop()), 1)
 
-        return x
-
-    
-    def forward(self, x, t):
-        # later: use attn to condition on the timestep
-        # the conditioning can also be on other stuff, like a text prompt
-        print(x.shape)
-        x = self.conv1(x)
-        x = self.conv2(x)
+        for module in self.up:
+            if type(module) != nn.ConvTranspose2d:
+                res1, res2, attn = module
+                x = res1(x)
+                x = res2(x)
+                x = attn(x)
+            else:
+                # if this layer upsamples, we will pop off of state
+                x = module(x)
+                x = torch.cat((x, state.pop()), 1)
         
         return x
-    """
+    
+    def count_parameters(self):
+        tot=0
+        for param in self.parameters():
+            tot += param.numel()
+        print(tot)
+    
+    def dump_state_dict(self, filename='state_dict.txt'):
+        for k, v in self.state_dict().items():
+            print(f'{k} {v.shape}')
 
 # HELPER FUNCTIONS
 
@@ -447,9 +433,7 @@ def fake_normalize(t: torch.Tensor):
     return (t - torch.mean(t)) / torch.var(t)
 
 class DiffusionModel():
-    
     def __init__(self, eps_model, epochs=10, train_steps_per_epoch=-1):
-        
         self.epochs = epochs
         self.train_steps = train_steps_per_epoch # -1 just means don't interrupt
         self.cum_loss = []
