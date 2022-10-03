@@ -10,6 +10,9 @@ import numpy as np
 from collections import OrderedDict
 import torch.nn.functional as F
 
+#### CONSTANTS
+DEVICE = 'cuda'
+
 #### TESTS
 
 def test_res():
@@ -46,7 +49,7 @@ def test_time_emb():
     t = SinusoidalEmbedding(50, 128)
 
 def gpu(x):
-    return x.to('cuda')
+    return x.to(DEVICE)
 
 def test_diffusion():
     UNET_DIM = 32
