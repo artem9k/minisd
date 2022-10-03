@@ -37,7 +37,13 @@ def test_attn():
 def test_unet():
     x = torch.randn((1, 3, 32, 32))
     u = UNet(64, 64)
-    y = u(x)
+    t = 2
+    y = u(x, t)
+
+def test_time_emb():
+    x = 5
+    t = SinusoidalEmbedding(50, 128)
+    print(t[x].shape)
 
 def Normalize(in_channels, num_groups=2):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
@@ -62,6 +68,7 @@ class SinusoidalEmbedding(nn.Module):
     def __getitem__(self, i):
         return self.PE[i]
 
+#todo: improveme
 """
 class RandomFourierFeatures(nn.Module):
     def __init__(self, size):
@@ -112,7 +119,7 @@ class ResnetBlock(nn.Module):
         # can just do linear for timestep embedding
         if temb:
             self.temb = True
-            self.linear = torch.nn.Linear(out_channels, out_channels)
+            self.linear = torch.nn.Linear(emb_channels, out_channels)
         else:
             self.temb = False
 
@@ -216,6 +223,7 @@ class UNet(nn.Module):
         out_channels,
         channel_mult = (1, 2, 4, 8),
         ch=4,
+        out_ch=3,
         num_res_blocks=2,
         resolution=64,
         use_timestep=False,
@@ -225,6 +233,9 @@ class UNet(nn.Module):
      
         self.down = nn.ModuleList()
         self.up = nn.ModuleList()
+
+        self.num_timesteps = 50
+        self.temb_dim = 128
 
         self.ch = channels
         self.temb_ch = self.ch*4
@@ -239,6 +250,13 @@ class UNet(nn.Module):
         self.up = nn.ModuleList()
         self.in_conv = nn.Conv2d(3, self.ch, kernel_size=7, padding="same")
         prev_dim = None
+
+        # mom: we have time embeddings at home  the time embeddings:
+        self.time_mlp = torch.nn.Sequential(
+            SinusoidalEmbedding(self.num_timesteps, self.temb_dim),
+            nn.Linear(self.temb_dim, self.temb_dim),
+            nn.Linear(self.temb_dim, self.temb_dim)
+        )
 
         # down 
         for scale in range(len(channel_mult)):
@@ -312,16 +330,20 @@ class UNet(nn.Module):
                 #upconv
                 self.up.append(torch.nn.ConvTranspose2d(dim, dim // 2, 3, stride=2, padding=1, output_padding=1))
 
-        #self.out_conv = nn.Conv2d(ch * 4, out_ch)
-    def forward(self, x):
+        self.out_conv = nn.Conv2d(prev_dim, out_ch, stride=1, kernel_size=3, padding=1)
+
+    def forward(self, x, t=None):
+
+        if t is not None:
+            t_emb = self.time_mlp(t)
 
         x = self.in_conv(x)
         state = []
         for i, module in enumerate(self.down):
             if type(module) != nn.MaxPool2d:
                 res1, res2, attn = module
-                x = res1(x)
-                x = res2(x)
+                x = res1(x, t)
+                x = res2(x, t)
                 x = attn(x)
             else:
                 # if this layer downsamples, we will add x to state
@@ -488,6 +510,7 @@ if __name__ == "__main__":
     test_sin()
     test_attn()
     test_unet()
+    test_time_emb()
 
 
     """
