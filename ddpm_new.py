@@ -493,8 +493,9 @@ class DiffusionModel():
         else:
             self.beta_schedule = linear_beta_schedule
     
-    def log(self, loss):
-        self.cum_loss.append(n_iter, n_epoch, loss.numel())
+    def log(self, n_iter, n_epoch, loss):
+        self.cum_loss.append((n_iter, n_epoch, float(loss)))
+        print(f'LOSS LOG: {loss}')
 
     def log_print(self, msg):
         print(f'PRINT LOG: {msg}')
@@ -527,11 +528,11 @@ class DiffusionModel():
                 eps = torch.randn_like(x_0)
                 x_out = self.eps_model(x_0, t)
                 loss = loss_fn(eps, self.eps_model(x_0, t)) 
-                
                 loss.backward()
                 optim.step()
 
                 self.log_print("Successfully completed backprop")
+                self.log(i, epoch, loss)
 
     def _sample(self, n_noise_steps=50):
         img_shape = (1, 3, 32, 32)
