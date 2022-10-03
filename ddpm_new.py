@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
 from collections import OrderedDict
+import torch.nn.functional as F
 
 #### TESTS
 
@@ -36,7 +37,7 @@ def test_attn():
 
 def test_unet():
     x = torch.randn((1, 3, 32, 32))
-    u = UNet(64, 64)
+    u = UNet(64)
     t = 2
     y = u(x, t)
 
@@ -45,31 +46,26 @@ def test_time_emb():
     t = SinusoidalEmbedding(50, 128)
 
 def test_diffusion():
+    UNET_DIM = 32
+
     ds = torchvision.datasets.CIFAR10(download=True, root=".")
     diffusion_ds = remove_labels(ds)
     diffusion_ds = totensor_ds(diffusion_ds)
-    eps_model = UNet()
-    diffusion = DiffusionModel()
-    diffusion._sample(eps_model)
-    diffusion._train(diffusion_ds, eps_model, epochs=1, train_steps_per_epoch=10)
+    eps_model = UNet(UNET_DIM)
+    diffusion = DiffusionModel(eps_model)
+    diffusion._sample()
+    diffusion._train(diffusion_ds, epochs=1, train_steps_per_epoch=10)
 
-    """
-    """
-    # stuff for ipynb
-
+    #deleteme: stuff for ipynb
     """
     t = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0,0,0],[1,1,1])])
-
     n_noise_steps = 50
     im = t(ds[0][0])
-
     betas = linear_beta_schedule(n_noise_steps)
-
     im_15 = noise_alpha(im, betas=betas, t=5)
     im_30 = noise_alpha(im, betas=betas, t=7)
     im_45 = noise_alpha(im, betas=betas, t=30)
     im_50 = noise_alpha(im, betas=betas, t=45)
-
     f, arr = plt.subplots(2, 2, figsize=(8, 8))
     arr[0,0].imshow(im_15.permute(1, 2, 0))
     arr[0,1].imshow(im_30.permute(1, 2, 0))
@@ -170,9 +166,9 @@ class ResnetBlock(nn.Module):
         x = self.conv1(x)
 
         if self.temb:
-            x = self.relu(x)
-            x += self.linear(emb).reshape(1, -1, 1, 1)
-
+            #x = F.relu(x) #self.relu(x)
+            emb = self.linear(emb)
+            x += emb.reshape(1, -1, 1, 1)
         #x = self.norm2(x)
         x = self.relu(x)
         x = self.drop(x)
@@ -252,7 +248,6 @@ class UNet(nn.Module):
     def __init__(
         self,
         channels,
-        out_channels,
         channel_mult = (1, 2, 4, 8),
         ch=4,
         out_ch=3,
@@ -285,7 +280,9 @@ class UNet(nn.Module):
         self.time_mlp = torch.nn.Sequential(
             SinusoidalEmbedding(self.num_timesteps, self.temb_ch),
             nn.Linear(self.temb_ch, self.temb_ch),
-            nn.Linear(self.temb_ch, self.temb_ch)
+            nn.SiLU(),
+            nn.Linear(self.temb_ch, self.temb_ch),
+            nn.SiLU()
         )
 
         # down 
@@ -360,7 +357,7 @@ class UNet(nn.Module):
                 #upconv
                 self.up.append(torch.nn.ConvTranspose2d(dim, dim // 2, 3, stride=2, padding=1, output_padding=1))
 
-        self.out_conv = nn.Conv2d(prev_dim, out_ch, stride=1, kernel_size=3, padding=1)
+        self.out_conv = nn.Conv2d(prev_dim, 3, stride=1, kernel_size=3, padding=1)
 
     def forward(self, x, t=None):
 
@@ -368,6 +365,7 @@ class UNet(nn.Module):
             t_emb = self.time_mlp(t)
 
         x = self.in_conv(x)
+
         state = []
         for i, module in enumerate(self.down):
             if type(module) != nn.MaxPool2d:
@@ -397,7 +395,8 @@ class UNet(nn.Module):
                 # if this layer upsamples, we will pop off of state
                 x = module(x)
                 x = torch.cat((x, state.pop()), 1)
-        
+
+        x = self.out_conv(x)     
         return x
     
     def count_parameters(self):
@@ -471,7 +470,6 @@ def loss_update(q_t0, p_xt, p_01):
 
 # calculate alpha at a certain timestep t
 def calculate_alpha(betas, t):
-    print(t)
     return torch.prod(1 - betas[:t])
 
 def linear_beta_schedule(num_timesteps):
@@ -484,7 +482,7 @@ def fake_normalize(t: torch.Tensor):
     return (t - torch.mean(t)) / torch.var(t)
 
 class DiffusionModel():
-    def __init__(self, eps_model, epochs=10, train_steps_per_epoch=-1):
+    def __init__(self, eps_model, epochs=10, train_steps_per_epoch=-1, beta_schedule=None):
         self.epochs = epochs
         self.train_steps = train_steps_per_epoch # -1 just means don't interrupt
         self.cum_loss = []
@@ -497,13 +495,22 @@ class DiffusionModel():
     
     def log(self, loss):
         self.cum_loss.append(n_iter, n_epoch, loss.numel())
+
+    def log_print(self, msg):
+        print(f'PRINT LOG: {msg}')
         
     # TRAINING LOOP
-    def _train(dataset, eps_model, epochs=10, train_steps_per_epoch=-1):    
+    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50):    
+
+        # debug
+        torch.autograd.set_detect_anomaly(True)
+
+        self.log_print("beginning training")
+
         img_shape = (1, 3, 32, 32)
         epochs = 10
         betas = linear_beta_schedule(n_noise_steps)
-        optim = torch.optim.Adam(eps_model.parameters()) # we leave default params
+        optim = torch.optim.Adam(self.eps_model.parameters()) # we leave default params
         loss_fn = torch.nn.MSELoss()
 
         for epoch in range(epochs):
@@ -513,22 +520,26 @@ class DiffusionModel():
                     if i == train_steps_per_epoch:
                         return 
 
-                t = torch.randint(0, NUM_STEPS, (1,))[0]
-                x_0 = img
+                t = torch.randint(0, n_noise_steps, (1,))[0]
+                x_0 = img.unsqueeze(0)
                 alpha = calculate_alpha(betas, t)
-                eps = torch.normal(torch.zeros(img_shape), 1)
-                loss = loss_fn(eps, eps_model(x_0, t)) 
+                #eps = torch.normal(torch.zeros(img_shape), 1)
+                eps = torch.randn_like(x_0)
+                x_out = self.eps_model(x_0, t)
+                loss = loss_fn(eps, self.eps_model(x_0, t)) 
                 
                 loss.backward()
                 optim.step()
 
-    def _sample(self, eps_model, num_steps=50):
+                self.log_print("Successfully completed backprop")
+
+    def _sample(self, n_noise_steps=50):
         img_shape = (1, 3, 32, 32)
         betas = linear_beta_schedule(n_noise_steps)
         x = torch.normal(torch.zeros(img_shape), 1)
-        for t in range(0, num_steps, -1):
+        for t in range(0, n_noise_steps, -1):
             sig = alpha ** 2
-            x = (1 / alpha) * (x - ((1 - alpha) / ((1 - alpha) ** 2)) * eps_model(x, t))
+            x = (1 / alpha) * (x - ((1 - alpha) / ((1 - alpha) ** 2)) * self.eps_model(x, t))
 
         return x
 
