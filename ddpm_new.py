@@ -9,14 +9,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import OrderedDict
 import torch.nn.functional as F
-import torch_xla
-import torch_xla.core.xla_model as xm
 
 #### CONSTANTS
-DEVICE = xm.xla_device() #'tpu'
+DEVICE = 'cpu' 
 
 #### TESTS
-
 def test_res():
     x = torch.randn((1, 128, 32, 32))
     res = ResnetBlock(128, 256, temb=False)
@@ -42,9 +39,12 @@ def test_attn():
 
 def test_unet():
     x = gpu(torch.randn((1, 3, 32, 32)))
-    u = gpu(UNet(64))
+    u = gpu(UNet(128))
     t = gpu(torch.tensor(2))
     y = u(x, t)
+
+    #u.count_parameters()
+    u.dump_state_dict()
 
 def test_time_emb():
     x = gpu(torch.tensor(5))
@@ -249,9 +249,6 @@ class AttnBlock(nn.Module):
 """
 total params for 128 dim: 
 142872835
-
-- fix temb
-- param count right?
 """
 
 class UNet(nn.Module):
@@ -262,7 +259,7 @@ class UNet(nn.Module):
         ch=4,
         out_ch=3,
         num_res_blocks=2,
-        resolution=64,
+        resolution=128,
         use_timestep=False
         ):
 
@@ -332,10 +329,10 @@ class UNet(nn.Module):
         )
 
         # up part of unet
-        prev_dim=prev_dim * 2
+        prev_dim=prev_dim + channel_scale[-1]
+
         inner_dim = None
         for scale in range(len(channel_mult) - 1, -1, -1):
-
             # blocc
             # attn
             # add block and attn, combine into module
@@ -346,6 +343,8 @@ class UNet(nn.Module):
 
                 in_dim = dim
                 if prev_dim is not None:
+                    print('in_dim: {in_dim}') 
+                    print('prev_dim: {prev_dim}') 
                     inner_dim = prev_dim
                     if prev_dim != dim:
                         in_dim = prev_dim
@@ -567,8 +566,8 @@ if __name__ == "__main__":
     #test_res_temb()
     #test_sin()
     #test_attn()
-    #test_unet()
+    test_unet()
     #test_time_emb()
-    test_diffusion()
+    #test_diffusion()
 
     
