@@ -9,9 +9,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import OrderedDict
 import torch.nn.functional as F
+import torch_xla
+import torch_xla.core.xla_model as xm
 
 #### CONSTANTS
-DEVICE = 'cuda'
+DEVICE = xm.xla_device() #'tpu'
 
 #### TESTS
 
