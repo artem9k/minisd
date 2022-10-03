@@ -24,8 +24,8 @@ def test_sin():
 def test_res_temb():
     temb = SinusoidalEmbedding(50, 256)
     x = torch.randn((1, 128, 32, 32))
-    res = ResnetBlock(128, 256)
-    y = res(x, temb[0])
+    res = ResnetBlock(128, 256, emb_channels=256)
+    y = res(x, temb(0))
     assert y.shape == (1, 256, 32, 32)
 
 def test_attn():
@@ -43,7 +43,39 @@ def test_unet():
 def test_time_emb():
     x = 5
     t = SinusoidalEmbedding(50, 128)
-    print(t[x].shape)
+
+def test_diffusion():
+    ds = torchvision.datasets.CIFAR10(download=True, root=".")
+    diffusion_ds = remove_labels(ds)
+    diffusion_ds = totensor_ds(diffusion_ds)
+    eps_model = UNet()
+    diffusion = DiffusionModel()
+    diffusion._sample(eps_model)
+    diffusion._train(diffusion_ds, eps_model, epochs=1, train_steps_per_epoch=10)
+
+    """
+    """
+    # stuff for ipynb
+
+    """
+    t = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0,0,0],[1,1,1])])
+
+    n_noise_steps = 50
+    im = t(ds[0][0])
+
+    betas = linear_beta_schedule(n_noise_steps)
+
+    im_15 = noise_alpha(im, betas=betas, t=5)
+    im_30 = noise_alpha(im, betas=betas, t=7)
+    im_45 = noise_alpha(im, betas=betas, t=30)
+    im_50 = noise_alpha(im, betas=betas, t=45)
+
+    f, arr = plt.subplots(2, 2, figsize=(8, 8))
+    arr[0,0].imshow(im_15.permute(1, 2, 0))
+    arr[0,1].imshow(im_30.permute(1, 2, 0))
+    arr[1,0].imshow(im_45.permute(1, 2, 0))
+    arr[1,1].imshow(im_50.permute(1, 2, 0))
+    """
 
 def Normalize(in_channels, num_groups=2):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
@@ -66,6 +98,8 @@ class SinusoidalEmbedding(nn.Module):
                     PE[i, j] = math.cos(i/10000**(2*j/num_hidden_units))
         self.PE = PE
     def __getitem__(self, i):
+        return self.PE[i]
+    def forward(self, i):
         return self.PE[i]
 
 #todo: improveme
@@ -113,8 +147,6 @@ class ResnetBlock(nn.Module):
 
         self.norm1 = Normalize(in_channels)
         self.norm2 = Normalize(out_channels)
-
-        temb = False
 
         # can just do linear for timestep embedding
         if temb:
@@ -192,8 +224,8 @@ class AttnBlock(nn.Module):
         # compute attention
         b,c,h,w = q.shape
         q = q.reshape(b,c,h*w)
-        q = q.permute(0,2,1)   # b,hw,c
-        k = k.reshape(b,c,h*w) # b,c,hw
+        q = q.permute(0,2,1)    # b,hw,c
+        k = k.reshape(b,c,h*w)  # b,c,hw
         w_ = torch.bmm(q,k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
         w_ = w_ * (int(c)**(-0.5))
         w_ = torch.nn.functional.softmax(w_, dim=2)
@@ -226,7 +258,7 @@ class UNet(nn.Module):
         out_ch=3,
         num_res_blocks=2,
         resolution=64,
-        use_timestep=False,
+        use_timestep=False
         ):
 
         super(UNet, self).__init__()
@@ -235,7 +267,6 @@ class UNet(nn.Module):
         self.up = nn.ModuleList()
 
         self.num_timesteps = 50
-        self.temb_dim = 128
 
         self.ch = channels
         self.temb_ch = self.ch*4
@@ -251,11 +282,10 @@ class UNet(nn.Module):
         self.in_conv = nn.Conv2d(3, self.ch, kernel_size=7, padding="same")
         prev_dim = None
 
-        # mom: we have time embeddings at home  the time embeddings:
         self.time_mlp = torch.nn.Sequential(
-            SinusoidalEmbedding(self.num_timesteps, self.temb_dim),
-            nn.Linear(self.temb_dim, self.temb_dim),
-            nn.Linear(self.temb_dim, self.temb_dim)
+            SinusoidalEmbedding(self.num_timesteps, self.temb_ch),
+            nn.Linear(self.temb_ch, self.temb_ch),
+            nn.Linear(self.temb_ch, self.temb_ch)
         )
 
         # down 
@@ -271,8 +301,8 @@ class UNet(nn.Module):
                     if prev_dim != dim:
                         in_dim = prev_dim
 
-                res1 = ResnetBlock(in_dim, dim) 
-                res2 = ResnetBlock(dim, dim)
+                res1 = ResnetBlock(in_dim, dim, emb_channels=self.temb_ch) 
+                res2 = ResnetBlock(dim, dim, emb_channels=self.temb_ch)
                 attn = AttnBlock(dim)
 
                 down_block = torch.nn.Sequential(
@@ -289,9 +319,9 @@ class UNet(nn.Module):
                 self.down.append(torch.nn.MaxPool2d(2, 2))
 
         self.mid = torch.nn.Sequential(
-            ResnetBlock(prev_dim, prev_dim * 4),
+            ResnetBlock(prev_dim, prev_dim * 4, temb=False),
             AttnBlock(prev_dim * 4),
-            ResnetBlock(prev_dim * 4, prev_dim),
+            ResnetBlock(prev_dim * 4, prev_dim, temb=False),
         )
 
         # up part of unet
@@ -313,8 +343,8 @@ class UNet(nn.Module):
                     if prev_dim != dim:
                         in_dim = prev_dim
                 
-                res1 = ResnetBlock(in_dim, dim) 
-                res2 = ResnetBlock(dim, dim)
+                res1 = ResnetBlock(in_dim, dim, emb_channels=self.temb_ch) 
+                res2 = ResnetBlock(dim, dim, emb_channels=self.temb_ch)
                 attn = AttnBlock(dim)
 
                 down_block = torch.nn.Sequential(
@@ -342,8 +372,8 @@ class UNet(nn.Module):
         for i, module in enumerate(self.down):
             if type(module) != nn.MaxPool2d:
                 res1, res2, attn = module
-                x = res1(x, t)
-                x = res2(x, t)
+                x = res1(x, t_emb)
+                x = res2(x, t_emb)
                 x = attn(x)
             else:
                 # if this layer downsamples, we will add x to state
@@ -360,8 +390,8 @@ class UNet(nn.Module):
         for module in self.up:
             if type(module) != nn.ConvTranspose2d:
                 res1, res2, attn = module
-                x = res1(x)
-                x = res2(x)
+                x = res1(x, t_emb)
+                x = res2(x, t_emb)
                 x = attn(x)
             else:
                 # if this layer upsamples, we will pop off of state
@@ -381,7 +411,6 @@ class UNet(nn.Module):
             print(f'{k} {v.shape}')
 
 # HELPER FUNCTIONS
-
 def remove_labels(ds):
     return list(map(lambda x: x[0], ds))
 
@@ -511,36 +540,6 @@ if __name__ == "__main__":
     test_attn()
     test_unet()
     test_time_emb()
+    test_diffusion()
 
-
-    """
-    ds = torchvision.datasets.CIFAR10(download=True, root=".")
-    diffusion_ds = remove_labels(ds)
-    diffusion_ds = totensor_ds(diffusion_ds)
-    eps_model = UNet()
-    diffusion = DiffusionModel()
-    diffusion._sample(eps_model)
-    diffusion._train(diffusion_ds, eps_model, epochs=1, train_steps_per_epoch=10)
-
-    """
-    # stuff for ipynb
-
-    """
-    t = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0,0,0],[1,1,1])])
-
-    n_noise_steps = 50
-    im = t(ds[0][0])
-
-    betas = linear_beta_schedule(n_noise_steps)
-
-    im_15 = noise_alpha(im, betas=betas, t=5)
-    im_30 = noise_alpha(im, betas=betas, t=7)
-    im_45 = noise_alpha(im, betas=betas, t=30)
-    im_50 = noise_alpha(im, betas=betas, t=45)
-
-    f, arr = plt.subplots(2, 2, figsize=(8, 8))
-    arr[0,0].imshow(im_15.permute(1, 2, 0))
-    arr[0,1].imshow(im_30.permute(1, 2, 0))
-    arr[1,0].imshow(im_45.permute(1, 2, 0))
-    arr[1,1].imshow(im_50.permute(1, 2, 0))
-    """
+    
