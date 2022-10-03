@@ -24,8 +24,8 @@ def test_sin():
 
 def test_res_temb():
     temb = SinusoidalEmbedding(50, 256)
-    x = torch.randn((1, 128, 32, 32))
-    res = ResnetBlock(128, 256, emb_channels=256)
+    x = gpu(torch.randn((1, 128, 32, 32)))
+    res = gpu(ResnetBlock(128, 256, emb_channels=256))
     y = res(x, temb(0))
     assert y.shape == (1, 256, 32, 32)
 
@@ -36,14 +36,17 @@ def test_attn():
     assert y.shape == (1, 128, 32, 32)
 
 def test_unet():
-    x = torch.randn((1, 3, 32, 32))
-    u = UNet(64)
-    t = 2
+    x = gpu(torch.randn((1, 3, 32, 32)))
+    u = gpu(UNet(64))
+    t = gpu(torch.tensor(2))
     y = u(x, t)
 
 def test_time_emb():
-    x = 5
+    x = gpu(torch.tensor(5))
     t = SinusoidalEmbedding(50, 128)
+
+def gpu(x):
+    return x.to('cuda')
 
 def test_diffusion():
     UNET_DIM = 32
@@ -52,9 +55,10 @@ def test_diffusion():
     diffusion_ds = remove_labels(ds)
     diffusion_ds = totensor_ds(diffusion_ds)
     eps_model = UNet(UNET_DIM)
+    eps_model = gpu(eps_model)
     diffusion = DiffusionModel(eps_model)
     diffusion._sample()
-    diffusion._train(diffusion_ds, epochs=1, train_steps_per_epoch=10)
+    diffusion._train(diffusion_ds, epochs=1, train_steps_per_epoch=300)
 
     #deleteme: stuff for ipynb
     """
@@ -93,6 +97,7 @@ class SinusoidalEmbedding(nn.Module):
                 else:
                     PE[i, j] = math.cos(i/10000**(2*j/num_hidden_units))
         self.PE = PE
+        self.PE = gpu(self.PE)
     def __getitem__(self, i):
         return self.PE[i]
     def forward(self, i):
@@ -505,9 +510,7 @@ class DiffusionModel():
 
         # debug
         torch.autograd.set_detect_anomaly(True)
-
         self.log_print("beginning training")
-
         img_shape = (1, 3, 32, 32)
         epochs = 10
         betas = linear_beta_schedule(n_noise_steps)
@@ -520,12 +523,21 @@ class DiffusionModel():
                 if train_steps_per_epoch != -1:
                     if i == train_steps_per_epoch:
                         return 
+                
+                img = img.unsqueeze(0)
+                img = gpu(img)
 
                 t = torch.randint(0, n_noise_steps, (1,))[0]
-                x_0 = img.unsqueeze(0)
+                t = gpu(t)
+
+                x_0 = img
+
                 alpha = calculate_alpha(betas, t)
+
                 #eps = torch.normal(torch.zeros(img_shape), 1)
                 eps = torch.randn_like(x_0)
+                eps = gpu(eps)
+
                 x_out = self.eps_model(x_0, t)
                 loss = loss_fn(eps, self.eps_model(x_0, t)) 
                 loss.backward()
@@ -546,12 +558,12 @@ class DiffusionModel():
 
 if __name__ == "__main__":
 
-    test_res()
-    test_res_temb()
-    test_sin()
-    test_attn()
-    test_unet()
-    test_time_emb()
+    #test_res()
+    #test_res_temb()
+    #test_sin()
+    #test_attn()
+    #test_unet()
+    #test_time_emb()
     test_diffusion()
 
     
