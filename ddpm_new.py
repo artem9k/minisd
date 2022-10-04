@@ -137,7 +137,7 @@ class ResnetBlock(nn.Module):
         x = self.conv1(x)
 
         if self.temb:
-            #x = F.relu(x) #self.relu(x)
+            self.relu(x)
             emb = self.linear(emb)
             x += emb.reshape(1, -1, 1, 1)
         x = self.norm2(x)
@@ -237,9 +237,6 @@ class UNet(nn.Module):
             [channel_scale[0], *channel_scale][:-1], channel_scale
         ))
 
-        #self.upch = [(128, 128), (128, 256), (256, 512), (512, 1024)]
-        #self.downch = [(2048, 1024), (1024, 512), (512, 256), (256, 128)]
-
         self.in_conv = nn.Conv2d(3, self.num_channels, kernel_size=7, padding="same")
 
         self.time_mlp = torch.nn.Sequential(
@@ -279,7 +276,7 @@ class UNet(nn.Module):
         )
 
         # up part of unet
-        prev_dim=prev_dim + prev_dim #channel_scale[-1]
+        prev_dim=prev_dim + prev_dim 
 
         for i, dims in enumerate(self.up_scales): #range(len(channel_mult)):
             in_dim, out_dim = dims
@@ -324,7 +321,6 @@ class UNet(nn.Module):
         
         state.append(x)
 
-        
         x = self.mid(x)
         add_l = False
 
@@ -452,7 +448,7 @@ class DiffusionModel():
     def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50):    
 
         # debug
-        torch.autograd.set_detect_anomaly(True)
+        #torch.autograd.set_detect_anomaly(True)
         self.log_print("beginning training")
         img_shape = (1, 3, 32, 32)
         epochs = 10
@@ -477,8 +473,9 @@ class DiffusionModel():
 
                 alpha = calculate_alpha(betas, t)
 
-                #eps = torch.normal(torch.zeros(img_shape), 1)
-                eps = torch.randn_like(x_0)
+                eps = torch.normal(torch.zeros(img_shape), 1)
+                #eps = torch.randn_like(x_0)
+
                 eps = gpu(eps)
 
                 x_out = self.eps_model(x_0, t)
@@ -507,6 +504,6 @@ if __name__ == "__main__":
     #test_attn()
     test_unet()
     #test_time_emb()
-    #test_diffusion()
+    test_diffusion()
 
     
