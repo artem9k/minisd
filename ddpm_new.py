@@ -66,15 +66,17 @@ def test_data_loader():
 
 def test_diffusion():
     UNET_DIM = 32
+    BATCH_SIZE = 32
 
     ds = torchvision.datasets.CIFAR10(download=True, root=".")
     diffusion_ds = remove_labels(ds)
     diffusion_ds = totensor_ds(diffusion_ds)
+    dl = BatchedDataLoader(diffusion_ds, batch_size=BATCH_SIZE)
     eps_model = UNet(UNET_DIM)
     eps_model = gpu(eps_model)
     diffusion = DiffusionModel(eps_model)
     diffusion._sample()
-    diffusion._train(diffusion_ds, epochs=1, train_steps_per_epoch=300)
+    diffusion._train(dl, epochs=1, train_steps_per_epoch=300, batch_size = BATCH_SIZE)
 
 def Normalize(in_channels, num_groups=2):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
@@ -150,9 +152,8 @@ class ResnetBlock(nn.Module):
 
         if self.temb:
             emb = self.linear(emb)
-            print(f'x: {x.shape}')
-            print(f'emb: {emb.shape}')
             x += emb.reshape(batch_size, -1, 1, 1)
+
         x = self.norm2(x)
         x = self.relu(x)
         x = self.drop(x)
@@ -315,12 +316,9 @@ class UNet(nn.Module):
 
     def forward(self, x, t=None):
     
-        print(t.shape)
-
         if t is not None:
             t_emb = self.time_mlp(t)
 
-        print(t_emb.shape)
         x = self.in_conv(x)
 
         state = []
@@ -446,16 +444,16 @@ def fake_normalize(t: torch.Tensor):
     return (t - torch.mean(t)) / torch.var(t)
 
 class BatchedDataLoader():
-    def __init__(self, ds, bsize=32):
+    def __init__(self, ds, batch_size=32):
         self.ds = ds
-        self.bsize = bsize
-    def set_bsize(self, new_bsize):
-        self.bsize = new_bsize
+        self.batch_size =batch_size 
+    def set_bsize(self, new_batch_size):
+        self.batch_size =new_batch_size 
     def __len__(self):
-        return len(self.ds) // self.bsize
+        return len(self.ds) // self.batch_size
     def __getitem__(self, i):
-        i *= self.bsize
-        return self.ds[i:i+self.bsize]
+        i *= self.batch_size
+        return torch.stack(self.ds[i:i+self.batch_size])
 
 class DiffusionModel():
     def __init__(self, eps_model, epochs=10, train_steps_per_epoch=-1, beta_schedule=None):
@@ -491,10 +489,9 @@ class DiffusionModel():
             for batch, img in enumerate(dataset):
 
                 if train_steps_per_epoch != -1:
-                    if i == train_steps_per_epoch:
+                    if batch == train_steps_per_epoch:
                         return 
                 
-                img = img.unsqueeze(0)
                 img = gpu(img)
 
                 t = torch.randint(0, n_noise_steps, (batch_size,))
@@ -509,12 +506,12 @@ class DiffusionModel():
                 eps = gpu(eps)
 
                 x_out = self.eps_model(x_0, t)
-                loss = loss_fn(eps, self.eps_model((alpha) * x_0 + (sqrt(1 - alpha)) * eps, t)) 
+                loss = loss_fn(eps, self.eps_model((alpha) * x_0 + (torch.sqrt(1 - alpha)) * eps, t)) 
                 loss.backward()
                 optim.step()
 
                 self.log_print("Successfully completed backprop")
-                self.log(i, epoch, loss)
+                self.log(batch, epoch, loss)
 
     def _sample(self, n_noise_steps=50):
         img_shape = (1, 3, 32, 32)
@@ -534,7 +531,7 @@ if __name__ == "__main__":
     #test_attn()
     #test_unet()
     #test_time_emb()
-    # test_diffusion()
-    test_data_loader()
+    test_diffusion()
+    #test_data_loader()
 
     
