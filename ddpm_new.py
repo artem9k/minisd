@@ -42,7 +42,6 @@ def test_unet():
     u = gpu(UNet(128))
     t = gpu(torch.tensor(2))
     y = u(x, t)
-
     #print(y.shape)
 
 def test_time_emb():
@@ -51,6 +50,19 @@ def test_time_emb():
 
 def gpu(x):
     return x.to(DEVICE)
+
+def test_data_loader():
+
+    BATCH_SIZE = 32
+
+    ds = torchvision.datasets.CIFAR10(download=True, root=".")
+    diffusion_ds = remove_labels(ds)
+    diffusion_ds = totensor_ds(diffusion_ds)
+    dl = BatchedDataLoader(diffusion_ds, BATCH_SIZE)
+    for i in range(len(dl)):
+        dl[i]
+    dl[0]
+    dl[-1]
 
 def test_diffusion():
     UNET_DIM = 32
@@ -130,16 +142,17 @@ class ResnetBlock(nn.Module):
                 self.resize_shortcut = torch.nn.Conv2d(in_channels, out_channels, 1, padding=0)
 
     def forward(self, x, emb=None):
-
+        batch_size = x.shape[0]
         x_prev = x
         x = self.norm1(x)
         x = self.relu(x)
         x = self.conv1(x)
 
         if self.temb:
-            self.relu(x)
             emb = self.linear(emb)
-            x += emb.reshape(1, -1, 1, 1)
+            print(f'x: {x.shape}')
+            print(f'emb: {emb.shape}')
+            x += emb.reshape(batch_size, -1, 1, 1)
         x = self.norm2(x)
         x = self.relu(x)
         x = self.drop(x)
@@ -301,10 +314,13 @@ class UNet(nn.Module):
         self.out_conv = nn.Conv2d(last_dim, 3, stride=1, kernel_size=3, padding=1)
 
     def forward(self, x, t=None):
+    
+        print(t.shape)
 
         if t is not None:
             t_emb = self.time_mlp(t)
 
+        print(t_emb.shape)
         x = self.in_conv(x)
 
         state = []
@@ -414,7 +430,11 @@ def loss_update(q_t0, p_xt, p_01):
 
 # calculate alpha at a certain timestep t
 def calculate_alpha(betas, t):
-    return torch.prod(1 - betas[:t])
+    tensor = torch.zeros_like(t)
+    for i in range(tensor.shape[0]):
+        tensor[i] = torch.prod(1 - betas[:t[i]])
+    
+    return tensor
 
 def linear_beta_schedule(num_timesteps):
     scale = 1000 / num_timesteps
@@ -424,6 +444,18 @@ def linear_beta_schedule(num_timesteps):
 
 def fake_normalize(t: torch.Tensor):
     return (t - torch.mean(t)) / torch.var(t)
+
+class BatchedDataLoader():
+    def __init__(self, ds, bsize=32):
+        self.ds = ds
+        self.bsize = bsize
+    def set_bsize(self, new_bsize):
+        self.bsize = new_bsize
+    def __len__(self):
+        return len(self.ds) // self.bsize
+    def __getitem__(self, i):
+        i *= self.bsize
+        return self.ds[i:i+self.bsize]
 
 class DiffusionModel():
     def __init__(self, eps_model, epochs=10, train_steps_per_epoch=-1, beta_schedule=None):
@@ -445,19 +477,18 @@ class DiffusionModel():
         print(f'PRINT LOG: {msg}')
         
     # TRAINING LOOP
-    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50):    
-
+    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50, batch_size=32):    
         # debug
         #torch.autograd.set_detect_anomaly(True)
         self.log_print("beginning training")
-        img_shape = (1, 3, 32, 32)
+        img_shape = (32, 3, 32, 32)
         epochs = 10
         betas = linear_beta_schedule(n_noise_steps)
-        optim = torch.optim.Adam(self.eps_model.parameters()) # we leave default params
+        optim = torch.optim.Adam(self.eps_model.parameters(), lr=2e-4) # we leave default params
         loss_fn = torch.nn.MSELoss()
 
         for epoch in range(epochs):
-            for i, img in enumerate(dataset):
+            for batch, img in enumerate(dataset):
 
                 if train_steps_per_epoch != -1:
                     if i == train_steps_per_epoch:
@@ -466,20 +497,19 @@ class DiffusionModel():
                 img = img.unsqueeze(0)
                 img = gpu(img)
 
-                t = torch.randint(0, n_noise_steps, (1,))[0]
+                t = torch.randint(0, n_noise_steps, (batch_size,))
                 t = gpu(t)
 
                 x_0 = img
 
+                # batched_calculate_alpha
                 alpha = calculate_alpha(betas, t)
 
-                eps = torch.normal(torch.zeros(img_shape), 1)
-                #eps = torch.randn_like(x_0)
-
+                eps = torch.randn_like(x_0)
                 eps = gpu(eps)
 
                 x_out = self.eps_model(x_0, t)
-                loss = loss_fn(eps, self.eps_model(x_0, t)) 
+                loss = loss_fn(eps, self.eps_model((alpha) * x_0 + (sqrt(1 - alpha)) * eps, t)) 
                 loss.backward()
                 optim.step()
 
@@ -502,8 +532,9 @@ if __name__ == "__main__":
     #test_res_temb()
     #test_sin()
     #test_attn()
-    test_unet()
+    #test_unet()
     #test_time_emb()
-    test_diffusion()
+    # test_diffusion()
+    test_data_loader()
 
     
