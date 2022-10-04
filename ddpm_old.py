@@ -43,7 +43,9 @@ def test_unet():
     t = gpu(torch.tensor(2))
     y = u(x, t)
 
-    #print(y.shape)
+    #u.count_parameters()
+    #u.dump_state_dict()
+    print(u)
 
 def test_time_emb():
     x = gpu(torch.tensor(5))
@@ -210,37 +212,35 @@ class AttnBlock(nn.Module):
 class UNet(nn.Module):
     def __init__(
         self,
-        num_channels,
+        channels,
         channel_mult = (1, 2, 4, 8),
         ch=4,
         out_ch=3,
-        num_res_blocks=1
+        num_res_blocks=1,
+        resolution=128,
+        use_timestep=False
         ):
+
         super(UNet, self).__init__()
-
-        # constants
-        self.num_timesteps = 50
-        self.num_channels = num_channels
-        self.temb_ch = self.num_channels *4
-        self.num_res_blocks = num_res_blocks
-        self.num_resolutions = len(channel_mult)
-
-        # fancy constants
+     
         self.down = nn.ModuleList()
         self.up = nn.ModuleList()
 
-        channel_scale = [self.num_channels * i for i in channel_mult]
+        self.num_timesteps = 50
 
-        self.up_scales = list(zip(
-            map(lambda x: x*2, channel_scale[::-1]), channel_scale[::-1]))
-        self.down_scales = list(zip(
-            [channel_scale[0], *channel_scale][:-1], channel_scale
-        ))
+        self.ch = channels
+        self.temb_ch = self.ch*4
+        num_resolutions = len(channel_mult)
+        self.num_res_blocks = num_res_blocks
+        self.resolution = resolution
+        self.use_timestep = use_timestep
 
-        #self.upch = [(128, 128), (128, 256), (256, 512), (512, 1024)]
-        #self.downch = [(2048, 1024), (1024, 512), (512, 256), (256, 128)]
+        channel_scale = [self.ch * i for i in channel_mult]
 
-        self.in_conv = nn.Conv2d(3, self.num_channels, kernel_size=7, padding="same")
+        self.down = nn.ModuleList()
+        self.up = nn.ModuleList()
+        self.in_conv = nn.Conv2d(3, self.ch, kernel_size=7, padding="same")
+        prev_dim = None
 
         self.time_mlp = torch.nn.Sequential(
             SinusoidalEmbedding(self.num_timesteps, self.temb_ch),
@@ -251,13 +251,21 @@ class UNet(nn.Module):
         )
 
         # down 
-        for i, dims in enumerate(self.down_scales): #range(len(channel_mult)):
-            in_dim, out_dim = dims
+        for scale in range(len(channel_mult)):
+            # bloc
+            # attn
+            # add block and attn, combine into module
+            dim = channel_scale[scale]
 
-            for block in range(num_res_blocks):
-                res1 = ResnetBlock(in_dim, out_dim, emb_channels=self.temb_ch) 
-                res2 = ResnetBlock(out_dim, out_dim, emb_channels=self.temb_ch)
-                attn = AttnBlock(out_dim)
+            for i in range(num_res_blocks):
+                in_dim = dim
+                if prev_dim is not None:
+                    if prev_dim != dim:
+                        in_dim = prev_dim
+
+                res1 = ResnetBlock(in_dim, dim, emb_channels=self.temb_ch) 
+                res2 = ResnetBlock(dim, dim, emb_channels=self.temb_ch)
+                attn = AttnBlock(dim)
 
                 down_block = torch.nn.Sequential(
                     res1,
@@ -267,10 +275,10 @@ class UNet(nn.Module):
 
                 self.down.append(down_block)
 
-            if i != len(channel_mult) - 1:
+                prev_dim = dim
+
+            if scale != num_resolutions - 1:
                 self.down.append(torch.nn.MaxPool2d(2, 2))
-        
-        prev_dim = self.down_scales[-1][-1]
 
         self.mid = torch.nn.Sequential(
             ResnetBlock(prev_dim, prev_dim * 4, temb=False),
@@ -279,29 +287,43 @@ class UNet(nn.Module):
         )
 
         # up part of unet
-        prev_dim=prev_dim + prev_dim #channel_scale[-1]
+        prev_dim=prev_dim + channel_scale[-1]
 
-        for i, dims in enumerate(self.up_scales): #range(len(channel_mult)):
-            in_dim, out_dim = dims
+        inner_dim = None
+        for scale in range(len(channel_mult) - 1, -1, -1):
+            # blocc
+            # attn
+            # add block and attn, combine into module
 
-            for block in range(num_res_blocks):
-                res1 = ResnetBlock(in_dim, out_dim, emb_channels=self.temb_ch) 
-                res2 = ResnetBlock(out_dim, out_dim, emb_channels=self.temb_ch)
-                attn = AttnBlock(out_dim)
+            dim = channel_scale[scale]
 
-                up_block = torch.nn.Sequential(
+            for i in range(num_res_blocks):
+
+                in_dim = dim
+                if prev_dim is not None:
+                    inner_dim = prev_dim
+                    if prev_dim != dim:
+                        in_dim = prev_dim
+                
+                res1 = ResnetBlock(in_dim, dim, emb_channels=self.temb_ch) 
+                res2 = ResnetBlock(dim, dim, emb_channels=self.temb_ch)
+                attn = AttnBlock(dim)
+
+                down_block = torch.nn.Sequential(
                     res1,
                     res2,
                     attn
                 )
 
-                self.up.append(up_block)
+                self.up.append(down_block)
+                prev_dim = dim
+           
+            if scale != 0: 
+                #upconv
+                self.up.append(torch.nn.ConvTranspose2d(dim, dim // 2, 3, stride=2, padding=1, output_padding=1))
+            
 
-            if i != self.num_resolutions - 1:
-                self.up.append(torch.nn.ConvTranspose2d(out_dim, out_dim // 2, 3, stride=2, padding=1, output_padding=1))
-
-        last_dim = self.up_scales[-1][-1]
-        self.out_conv = nn.Conv2d(last_dim, 3, stride=1, kernel_size=3, padding=1)
+        self.out_conv = nn.Conv2d(prev_dim, 3, stride=1, kernel_size=3, padding=1)
 
     def forward(self, x, t=None):
 
@@ -321,15 +343,13 @@ class UNet(nn.Module):
                 # if this layer downsamples, we will add x to state
                 state.append(x)
                 x = module(x)
-        
+            
         state.append(x)
 
-        
         x = self.mid(x)
         add_l = False
 
-        l = state.pop()
-        x = torch.cat((x, l), 1)
+        x = torch.cat((x, state.pop()), 1)
 
         for module in self.up:
             if type(module) != nn.ConvTranspose2d:
@@ -340,11 +360,9 @@ class UNet(nn.Module):
             else:
                 # if this layer upsamples, we will pop off of state
                 x = module(x)
-                l = state.pop()
-                x = torch.cat((x, l), 1)
+                x = torch.cat((x, state.pop()), 1)
 
         x = self.out_conv(x)     
-
         return x
     
     def count_parameters(self):
@@ -356,7 +374,7 @@ class UNet(nn.Module):
     def dump_state_dict(self, filename='state_dict.txt'):
         for k, v in self.state_dict().items():
             print(f'{k} {v.shape}')
-    
+
 # HELPER FUNCTIONS
 def remove_labels(ds):
     return list(map(lambda x: x[0], ds))
