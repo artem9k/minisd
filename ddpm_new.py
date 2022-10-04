@@ -65,31 +65,8 @@ def test_diffusion():
     diffusion._sample()
     diffusion._train(diffusion_ds, epochs=1, train_steps_per_epoch=300)
 
-    #deleteme: stuff for ipynb
-    """
-    t = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0,0,0],[1,1,1])])
-    n_noise_steps = 50
-    im = t(ds[0][0])
-    betas = linear_beta_schedule(n_noise_steps)
-    im_15 = noise_alpha(im, betas=betas, t=5)
-    im_30 = noise_alpha(im, betas=betas, t=7)
-    im_45 = noise_alpha(im, betas=betas, t=30)
-    im_50 = noise_alpha(im, betas=betas, t=45)
-    f, arr = plt.subplots(2, 2, figsize=(8, 8))
-    arr[0,0].imshow(im_15.permute(1, 2, 0))
-    arr[0,1].imshow(im_30.permute(1, 2, 0))
-    arr[1,0].imshow(im_45.permute(1, 2, 0))
-    arr[1,1].imshow(im_50.permute(1, 2, 0))
-    """
-
 def Normalize(in_channels, num_groups=2):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
-
-"""
-PE(pos,2i) = sin(pos/10000**(2*i/hidden_units))
-PE(pos,2i+1) = cos(pos/10000**(2*i/hidden_units))
-todo make not shitty
-"""
 
 class SinusoidalEmbedding(nn.Module):
     def __init__(self, size, num_hidden_units):
@@ -107,20 +84,6 @@ class SinusoidalEmbedding(nn.Module):
         return self.PE[i]
     def forward(self, i):
         return self.PE[i]
-
-#todo: improveme
-"""
-class RandomFourierFeatures(nn.Module):
-    def __init__(self, size):
-        super(TimestepEmbedding, self).__init__()
-        beta = 
-        alpha = 0
-        self.temb_block = []
-        for i in temb_block:
-            pass
-    def forward(self, i):
-        return self.temb_block[i]
-"""    
 
 class ResBlock(nn.Module):
     def __init__(self):
@@ -154,7 +117,6 @@ class ResnetBlock(nn.Module):
         self.norm1 = Normalize(in_channels)
         self.norm2 = Normalize(out_channels)
 
-        # can just do linear for timestep embedding
         if temb:
             self.temb = True
             self.linear = torch.nn.Linear(emb_channels, out_channels)
@@ -245,11 +207,6 @@ class AttnBlock(nn.Module):
         h_ = self.proj_out(h_)
 
         return x+h_
-
-"""
-total params for 128 dim: 
-142872835
-"""
 
 class UNet(nn.Module):
     def __init__(
