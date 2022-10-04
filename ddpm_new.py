@@ -132,7 +132,7 @@ class ResnetBlock(nn.Module):
     def forward(self, x, emb=None):
 
         x_prev = x
-        #x = self.norm1(x)
+        x = self.norm1(x)
         x = self.relu(x)
         x = self.conv1(x)
 
@@ -140,7 +140,7 @@ class ResnetBlock(nn.Module):
             #x = F.relu(x) #self.relu(x)
             emb = self.linear(emb)
             x += emb.reshape(1, -1, 1, 1)
-        #x = self.norm2(x)
+        x = self.norm2(x)
         x = self.relu(x)
         x = self.drop(x)
         x = self.conv2(x)
