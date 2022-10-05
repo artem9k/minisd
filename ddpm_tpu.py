@@ -9,9 +9,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import OrderedDict
 import torch.nn.functional as F
+import os
+
+#import torch_xla.core.xla_model as xm
+
 
 #### CONSTANTS
-DEVICE = 'cpu' 
+DEVICE = 'cpu'# xm.xla_device()
 
 #### TESTS
 def test_res():
@@ -65,7 +69,7 @@ def test_data_loader():
     dl[-1]
 
 def test_diffusion():
-    UNET_DIM = 128 
+    UNET_DIM = 128
     BATCH_SIZE = 128
 
     ds = torchvision.datasets.CIFAR10(download=True, root=".")
@@ -143,6 +147,8 @@ class ResnetBlock(nn.Module):
             else:
                 self.resize_shortcut = torch.nn.Conv2d(in_channels, out_channels, 1, padding=0)
 
+        self.c = None
+
     def forward(self, x, emb=None):
         batch_size = x.shape[0]
         x_prev = x
@@ -165,7 +171,7 @@ class ResnetBlock(nn.Module):
             else:
                 x_prev = self.resize_shortcut(x_prev)
 
-        return x + x_prev 
+        return x + x_prev
 
 
 class AttnBlock(nn.Module):
@@ -194,6 +200,7 @@ class AttnBlock(nn.Module):
                                         kernel_size=1,
                                         stride=1,
                                         padding=0)
+        self.c = None
 
     def forward(self, x):
         h_ = x
@@ -204,11 +211,15 @@ class AttnBlock(nn.Module):
 
         # compute attention
         b,c,h,w = q.shape
+
+        if self.c == None:
+            self.c = torch.tensor(c, device=DEVICE)
+
         q = q.reshape(b,c,h*w)
         q = q.permute(0,2,1)    # b,hw,c
         k = k.reshape(b,c,h*w)  # b,c,hw
         w_ = torch.bmm(q,k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
-        w_ = w_ * (int(c)**(-0.5))
+        w_ = w_ * torch.sqrt(self.c)
         w_ = torch.nn.functional.softmax(w_, dim=2)
 
         # attend to values
@@ -261,12 +272,12 @@ class UNet(nn.Module):
             nn.SiLU()
         )
 
-        # down 
+        # down
         for i, dims in enumerate(self.down_scales): #range(len(channel_mult)):
             in_dim, out_dim = dims
 
             for block in range(num_res_blocks):
-                res1 = ResnetBlock(in_dim, out_dim, emb_channels=self.temb_ch) 
+                res1 = ResnetBlock(in_dim, out_dim, emb_channels=self.temb_ch)
                 res2 = ResnetBlock(out_dim, out_dim, emb_channels=self.temb_ch)
                 attn = AttnBlock(out_dim)
 
@@ -280,7 +291,7 @@ class UNet(nn.Module):
 
             if i != len(channel_mult) - 1:
                 self.down.append(torch.nn.MaxPool2d(2, 2))
-        
+
         prev_dim = self.down_scales[-1][-1]
 
         self.mid = torch.nn.Sequential(
@@ -290,13 +301,13 @@ class UNet(nn.Module):
         )
 
         # up part of unet
-        prev_dim=prev_dim + prev_dim 
+        prev_dim=prev_dim + prev_dim
 
         for i, dims in enumerate(self.up_scales): #range(len(channel_mult)):
             in_dim, out_dim = dims
 
             for block in range(num_res_blocks):
-                res1 = ResnetBlock(in_dim, out_dim, emb_channels=self.temb_ch) 
+                res1 = ResnetBlock(in_dim, out_dim, emb_channels=self.temb_ch)
                 res2 = ResnetBlock(out_dim, out_dim, emb_channels=self.temb_ch)
                 attn = AttnBlock(out_dim)
 
@@ -315,7 +326,7 @@ class UNet(nn.Module):
         self.out_conv = nn.Conv2d(last_dim, 3, stride=1, kernel_size=3, padding=1)
 
     def forward(self, x, t=None):
-    
+
         if t is not None:
             t_emb = self.time_mlp(t)
 
@@ -332,7 +343,7 @@ class UNet(nn.Module):
                 # if this layer downsamples, we will add x to state
                 state.append(x)
                 x = module(x)
-        
+
         state.append(x)
 
         x = self.mid(x)
@@ -353,20 +364,20 @@ class UNet(nn.Module):
                 l = state.pop()
                 x = torch.cat((x, l), 1)
 
-        x = self.out_conv(x)     
+        x = self.out_conv(x)
 
         return x
-    
+
     def count_parameters(self):
         tot=0
         for param in self.parameters():
             tot += param.numel()
         print(tot)
-    
+
     def dump_state_dict(self, filename='state_dict.txt'):
         for k, v in self.state_dict().items():
             print(f'{k} {v.shape}')
-    
+
 # HELPER FUNCTIONS
 def remove_labels(ds):
     return list(map(lambda x: x[0], ds))
@@ -397,7 +408,7 @@ def noise(img):
 # noise an image for n steps
 def noise_n_steps(img, betas, n):
     img = torch.clone(img)
-    
+
     for b, i in zip(betas, range(n)):
         beta = b
         sqrt_beta = (1 - beta) ** 0.5
@@ -408,7 +419,7 @@ def noise_n_steps(img, betas, n):
 def noise_1_step(img, beta):
     sqrt_beta = math.sqrt(1 - beta)
     img *= torch.normal(torch.ones(img.shape) * sqrt_beta, beta)
-    
+
 # closed form sampling for the noise using alpha param
 def noise_nth_step(img, betas, t):
     alphas_cumprod = 1
@@ -422,7 +433,7 @@ def noise_alpha(img, betas, t):
     return torch.normal(img * (alpha ** 0.5), (1 - alpha))
 
 # single loss update using KL divergence
-# KL is the distance between probability of distributions p and q 
+# KL is the distance between probability of distributions p and q
 def loss_update(q_t0, p_xt, p_01):
     return
 
@@ -431,7 +442,7 @@ def calculate_alpha(betas, t):
     tensor = torch.zeros_like(t)
     for i in range(tensor.shape[0]):
         tensor[i] = torch.prod(1 - betas[:t[i]])
-    
+
     return tensor
 
 def linear_beta_schedule(num_timesteps):
@@ -446,9 +457,9 @@ def fake_normalize(t: torch.Tensor):
 class BatchedDataLoader():
     def __init__(self, ds, batch_size=32):
         self.ds = ds
-        self.batch_size =batch_size 
+        self.batch_size =batch_size
     def set_bsize(self, new_batch_size):
-        self.batch_size =new_batch_size 
+        self.batch_size =new_batch_size
     def __len__(self):
         return len(self.ds) // self.batch_size
     def __getitem__(self, i):
@@ -461,19 +472,20 @@ class DiffusionModel():
         self.train_steps = train_steps_per_epoch # -1 just means don't interrupt
         self.cum_loss = []
         self.eps_model = eps_model
-        
+
         if beta_schedule is not None:
             self.beta_schedule = beta_schedule
         else:
             self.beta_schedule = linear_beta_schedule
-    
+
     def log(self, n_iter, n_epoch, loss):
-        self.cum_loss.append((n_iter, n_epoch, float(loss)))
-        print(f'LOSS LOG: {loss}')
+        #self.cum_loss.append((n_iter, n_epoch, float(loss)))
+        #print(f'LOSS LOG: {loss}')
+        pass
 
     def log_print(self, msg):
         print(f'PRINT LOG: {msg}')
-        
+
     # TRAINING LOOP
     def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50, batch_size=32):    
         # debug
@@ -482,7 +494,7 @@ class DiffusionModel():
         img_shape = (32, 3, 32, 32)
         epochs = 10
         betas = linear_beta_schedule(n_noise_steps)
-        optim = torch.optim.Adam(self.eps_model.parameters(), lr=2e-4) # we leave default params
+        optim = torch.optim.AdamW(self.eps_model.parameters(), lr=2e-4) # we leave default params
         loss_fn = torch.nn.MSELoss()
 
         for epoch in range(epochs):
@@ -490,8 +502,8 @@ class DiffusionModel():
 
                 if train_steps_per_epoch != -1:
                     if batch == train_steps_per_epoch:
-                        return 
-                
+                        return
+
                 img = gpu(img)
 
                 t = torch.randint(0, n_noise_steps, (batch_size,))
@@ -500,16 +512,17 @@ class DiffusionModel():
                 x_0 = img
 
                 # batched_calculate_alpha
-                alpha = calculate_alpha(betas, t)
+                alpha = gpu(calculate_alpha(betas, t))
+                alpha = alpha.reshape(-1, 1, 1, 1)
 
                 eps = torch.randn_like(x_0)
                 eps = gpu(eps)
 
-                x_out = self.eps_model(x_0, t)
-                alpha * x_0 + torch.sqrt(1 - alpha) * eps
-                #loss = loss_fn(eps, self.eps_model((alpha) * x_0 + (torch.sqrt(1 - alpha)) * eps, t)) 
-                #loss.backward()
-                #optim.step()
+                eps_out = self.eps_model((alpha) * x_0 + (torch.sqrt(1 - alpha)) * eps, t)
+
+                loss = loss_fn(eps, eps_out)
+                loss.backward()
+                optim.step()
 
                 self.log_print("Successfully completed backprop")
                 self.log(batch, epoch, loss)
@@ -532,7 +545,8 @@ if __name__ == "__main__":
     #test_attn()
     #test_unet()
     #test_time_emb()
+    os.environ['XLA_IR_DEBUG'] = '1'
     test_diffusion()
     #test_data_loader()
-
-    
+    #print('device loaded successfully')
+    #print(DEVICE)
