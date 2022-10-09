@@ -11,11 +11,13 @@ from collections import OrderedDict
 import torch.nn.functional as F
 import os
 
-#import torch_xla.core.xla_model as xm
+import torch_xla.core.xla_model as xm
+import torch_xla.debug.metrics as met
+
 
 
 #### CONSTANTS
-DEVICE = 'cpu'# xm.xla_device()
+DEVICE = xm.xla_device()
 
 #### TESTS
 def test_res():
@@ -70,7 +72,7 @@ def test_data_loader():
 
 def test_diffusion():
     UNET_DIM = 128
-    BATCH_SIZE = 128
+    BATCH_SIZE = 32
 
     ds = torchvision.datasets.CIFAR10(download=True, root=".")
     diffusion_ds = remove_labels(ds)
@@ -79,6 +81,7 @@ def test_diffusion():
     eps_model = UNet(UNET_DIM)
     eps_model = gpu(eps_model)
     diffusion = DiffusionModel(eps_model)
+    diffusion = gpu(diffusion)
     diffusion._sample()
     diffusion._train(dl, epochs=1, train_steps_per_epoch=300, batch_size = BATCH_SIZE)
 
@@ -219,7 +222,7 @@ class AttnBlock(nn.Module):
         q = q.permute(0,2,1)    # b,hw,c
         k = k.reshape(b,c,h*w)  # b,c,hw
         w_ = torch.bmm(q,k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
-        w_ = w_ * torch.sqrt(self.c)
+        w_ = w_ * torch.pow(self.c, 0.5) # using torch.sqrt breaks tpu
         w_ = torch.nn.functional.softmax(w_, dim=2)
 
         # attend to values
@@ -440,6 +443,7 @@ def loss_update(q_t0, p_xt, p_01):
 # calculate alpha at a certain timestep t
 def calculate_alpha(betas, t):
     tensor = torch.zeros_like(t)
+    return tensor
     for i in range(tensor.shape[0]):
         tensor[i] = torch.prod(1 - betas[:t[i]])
 
@@ -456,18 +460,21 @@ def fake_normalize(t: torch.Tensor):
 
 class BatchedDataLoader():
     def __init__(self, ds, batch_size=32):
-        self.ds = ds
+        self.len = len(ds)
+        self.ds = torch.stack(ds)
         self.batch_size =batch_size
     def set_bsize(self, new_batch_size):
         self.batch_size =new_batch_size
     def __len__(self):
-        return len(self.ds) // self.batch_size
+        return self.len
+        #return len(self.ds) // self.batch_size
     def __getitem__(self, i):
         i *= self.batch_size
-        return torch.stack(self.ds[i:i+self.batch_size])
+        return self.ds[i:i+self.batch_size]
 
-class DiffusionModel():
+class DiffusionModel(nn.Module):
     def __init__(self, eps_model, epochs=10, train_steps_per_epoch=-1, beta_schedule=None):
+        super(DiffusionModel, self).__init__()
         self.epochs = epochs
         self.train_steps = train_steps_per_epoch # -1 just means don't interrupt
         self.cum_loss = []
@@ -479,53 +486,66 @@ class DiffusionModel():
             self.beta_schedule = linear_beta_schedule
 
     def log(self, n_iter, n_epoch, loss):
-        #self.cum_loss.append((n_iter, n_epoch, float(loss)))
-        #print(f'LOSS LOG: {loss}')
+        self.cum_loss.append((n_iter, n_epoch, float(loss)))
+        print(f'LOSS LOG: {loss}')
         pass
 
     def log_print(self, msg):
         print(f'PRINT LOG: {msg}')
 
     # TRAINING LOOP
-    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50, batch_size=32):    
+    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50, batch_size=32):
         # debug
         #torch.autograd.set_detect_anomaly(True)
         self.log_print("beginning training")
-        img_shape = (32, 3, 32, 32)
-        epochs = 10
         betas = linear_beta_schedule(n_noise_steps)
-        optim = torch.optim.AdamW(self.eps_model.parameters(), lr=2e-4) # we leave default params
+        optim = torch.optim.Adam(self.eps_model.parameters(), lr=2e-4) # we leave default params
         loss_fn = torch.nn.MSELoss()
 
         for epoch in range(epochs):
             for batch, img in enumerate(dataset):
-
                 if train_steps_per_epoch != -1:
                     if batch == train_steps_per_epoch:
+                        print('we return here')
                         return
-
+                img = dataset[8]
                 img = gpu(img)
+                print('translating')
 
                 t = torch.randint(0, n_noise_steps, (batch_size,))
                 t = gpu(t)
+                print('gpud')
 
                 x_0 = img
 
                 # batched_calculate_alpha
                 alpha = gpu(calculate_alpha(betas, t))
+                print('calculate alpha')
                 alpha = alpha.reshape(-1, 1, 1, 1)
 
-                eps = torch.randn_like(x_0)
+                sqrt_alpha = torch.pow(1 - alpha, 0.5) #using torch.sqrt breaks tpu for some reason
+
+                eps = torch.randn_like(x_0, requires_grad=True)
                 eps = gpu(eps)
 
-                eps_out = self.eps_model((alpha) * x_0 + (torch.sqrt(1 - alpha)) * eps, t)
+                eps_out = self.eps_model((alpha) * x_0 + (sqrt_alpha) * eps, t)
+                print('model out')
 
                 loss = loss_fn(eps, eps_out)
+                print('loss')
                 loss.backward()
-                optim.step()
+                print('backward')
 
-                self.log_print("Successfully completed backprop")
-                self.log(batch, epoch, loss)
+                optim.step()
+                xm.mark_step()
+                print('optim step')
+
+                #print(loss)
+
+                report=met.metrics_report().split('\n')
+                print(torch_xla._XLAC._xla_metrics_report())
+
+                #self.log(batch, epoch, loss)
 
     def _sample(self, n_noise_steps=50):
         img_shape = (1, 3, 32, 32)
