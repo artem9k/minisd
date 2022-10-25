@@ -15,7 +15,8 @@ import torch_xla.core.xla_model as xm
 import torch_xla.debug.metrics as met
 
 #### CONSTANTS
-DEVICE = xm.xla_device()
+DEVICE = 'cuda' #xm.xla_device()
+NUM_STEPS = 1000
 
 #### TESTS
 def test_res():
@@ -29,7 +30,7 @@ def test_sin():
     assert sin[0].shape == (256,)
 
 def test_res_temb():
-    temb = SinusoidalEmbedding(50, 256)
+    temb = SinusoidalEmbedding(NUM_STEPS, 256)
     x = gpu(torch.randn((1, 128, 32, 32)))
     res = gpu(ResnetBlock(128, 256, emb_channels=256))
     y = res(x, temb(0))
@@ -50,7 +51,7 @@ def test_unet():
 
 def test_time_emb():
     x = gpu(torch.tensor(5))
-    t = SinusoidalEmbedding(50, 128)
+    t = SinusoidalEmbedding(NUM_STEPS, 128)
 
 def gpu(x):
     return x.to(DEVICE)
@@ -93,7 +94,7 @@ class SinusoidalEmbedding(nn.Module):
         for i in range(size):
             for j in range(num_hidden_units):
                 if i % 2 == 0:
-                    PE[i, j] = math.sin(i/ 10000 ** (2*j/num_hidden_units))
+                    PE[i, j] = math.sin(i/10000 ** (2*j/num_hidden_units))
                 else:
                     PE[i, j] = math.cos(i/10000**(2*j/num_hidden_units))
         self.PE = PE
@@ -884,7 +885,7 @@ class DiffusionModel(nn.Module):
         print(f'PRINT LOG: {msg}')
 
     # TRAINING LOOP
-    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=50, batch_size=32):
+    def _train(self, dataset, epochs=10, train_steps_per_epoch=-1, n_noise_steps=NUM_STEPS, batch_size=32):
         # debug
         #torch.autograd.set_detect_anomaly(True)
         self.log_print("beginning training")
@@ -894,47 +895,39 @@ class DiffusionModel(nn.Module):
 
         for epoch in range(epochs):
             for batch, img in enumerate(dataset):
+                """
                 if train_steps_per_epoch != -1:
                     if batch == train_steps_per_epoch:
                         print('we return here')
                         return
-                img = dataset[8]
+                """
+
                 img = gpu(img)
-                print('translating')
 
                 t = torch.randint(0, n_noise_steps, (batch_size,))
                 t = gpu(t)
-                print('gpud')
 
                 x_0 = img
 
                 # batched_calculate_alpha
                 alpha = gpu(calculate_alpha(betas, t))
-                print('calculate alpha')
                 alpha = alpha.reshape(-1, 1, 1, 1)
 
-                sqrt_alpha = torch.pow(1 - alpha, 0.5) #using torch.sqrt breaks tpu for some reason
+                sqrt_alpha = torch.sqrt(1 - alpha) #using torch.sqrt breaks tpu for some reason
 
                 eps = torch.randn_like(x_0, requires_grad=True)
                 eps = gpu(eps)
 
                 eps_out = self.eps_model((alpha) * x_0 + (sqrt_alpha) * eps, t)
-                print('model out')
 
                 loss = loss_fn(eps, eps_out)
-                print('loss')
                 loss.backward()
-                print('backward')
 
                 optim.step()
-                xm.mark_step()
-                print('optim step')
-
+ 
                 #print(loss)
-
-                report=met.metrics_report().split('\n')
-                print(torch_xla._XLAC._xla_metrics_report())
-
+                #report=met.metrics_report().split('\n')
+                #print(torch_xla._XLAC._xla_metrics_report())
                 #self.log(batch, epoch, loss)
 
     def _sample(self, n_noise_steps=50):
@@ -955,7 +948,7 @@ if __name__ == "__main__":
     #test_attn()
     #test_unet()
     #test_time_emb()
-    os.environ['XLA_IR_DEBUG'] = '1'
+    #os.environ['XLA_IR_DEBUG'] = '1'
     test_diffusion()
     #test_data_loader()
     #print('device loaded successfully')
